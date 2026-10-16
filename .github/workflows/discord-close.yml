@@ -1,0 +1,46 @@
+name: Post closures to Discord
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the closing comment to the report's Discord thread
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBHOOK: ${{ secrets.DISCORD_BUG_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          BODY: ${{ github.event.issue.body }}
+          REASON: ${{ github.event.issue.state_reason }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_BUG_WEBHOOK is not set; skipping."
+            exit 0
+          fi
+          thread=$(printf '%s' "$BODY" | grep -oE '<!-- discord-thread: [0-9]{17,20} -->' | grep -oE '[0-9]{17,20}' | head -n 1 || true)
+          if [ -z "$thread" ]; then
+            echo "No discord-thread marker; skipping."
+            exit 0
+          fi
+          sleep 5
+          comment=$(gh api "repos/$REPO/issues/$NUMBER/comments?per_page=100" --jq 'last | .body // ""' | head -c 1500)
+          if [ "$REASON" = "completed" ]; then
+            header="Fixed: #$NUMBER $TITLE"
+          else
+            header="Closed: #$NUMBER $TITLE"
+          fi
+          payload=$(jq -n --arg header "$header" --arg comment "$comment" --arg url "$URL" \
+            '{content: ([$header, $comment, $url] | map(select(. != "")) | join("\n")), allowed_mentions: {parse: []}}')
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            --data "$payload" "$WEBHOOK?thread_id=$thread" > /dev/null
+          echo "Posted to thread $thread."
